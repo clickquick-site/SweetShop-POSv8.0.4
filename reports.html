@@ -1043,6 +1043,12 @@
           </div>
           <div class="kpi-value" id="dailyNewDebt">0</div>
         </div>
+        <div class="kpi-card settled">
+          <div class="kpi-header">
+            <span class="kpi-title">مسدد اليوم (من ديون)</span>
+          </div>
+          <div class="kpi-value" id="dailySettled">0</div>
+        </div>
         <div class="kpi-card expenses">
           <div class="kpi-header">
             <span class="kpi-title">المصاريف</span>
@@ -2049,14 +2055,26 @@ function setPeriod(period) {
 async function loadDailyReport() {
   const date = document.getElementById('dailyDate').value;
   
-  const daySales = allSales.filter(s => 
-    !s.isCancelled && s.date.startsWith(date)
+  // ✅ فصل المبيعات الحقيقية عن وصولات التسديد
+  const daySales = allSales.filter(s =>
+    !s.isCancelled &&
+    s.date.startsWith(date) &&
+    s.invoiceKind !== 'settlement' &&
+    s.invoiceKind !== 'partial'
   );
-  
-  // ✅ الفصل الصحيح: نقدي = paid | دين جديد = total - paid
-  const totalSales  = daySales.reduce((sum, s) => sum + (s.total || 0), 0);
-  const totalCash   = daySales.reduce((sum, s) => sum + (s.paid  || 0), 0);
-  const totalNewDebt= daySales.reduce((sum, s) => sum + Math.max(0,(s.total||0)-(s.paid||0)), 0);
+  // وصولات التسديد (نقد مقبوض على ديون سابقة)
+  const daySettlements = allSales.filter(s =>
+    !s.isCancelled &&
+    s.date.startsWith(date) &&
+    (s.invoiceKind === 'settlement' || s.invoiceKind === 'partial')
+  );
+
+  // ✅ الحسابات الصحيحة
+  const totalSales   = daySales.reduce((sum, s) => sum + (s.total  || 0), 0);
+  const totalCash    = daySales.reduce((sum, s) => sum + (s.paid   || 0), 0)
+                     + daySettlements.reduce((sum, s) => sum + (s.paid || 0), 0);
+  const totalNewDebt = daySales.reduce((sum, s) => sum + Math.max(0, (s.total||0) - (s.paid||0)), 0);
+  const settledToday = daySettlements.reduce((sum, s) => sum + (s.paid || 0), 0);
   const count = daySales.length;
   
   // حساب المصاريف — فقط المسددة
@@ -2081,21 +2099,52 @@ async function loadDailyReport() {
   document.getElementById('dailyCount').textContent    = count;
   document.getElementById('dailyExpenses').textContent = window.currencyFormatter.format(expensesTotal);
   document.getElementById('dailyProfit').textContent   = window.currencyFormatter.format(profit);
+  // ✅ عرض الديون المسددة اليوم إذا وُجد العنصر
+  const settledEl = document.getElementById('dailySettled');
+  if (settledEl) settledEl.textContent = window.currencyFormatter.format(settledToday);
   
-  // عرض تفاصيل المبيعات
+  // ✅ عرض المبيعات الحقيقية
   const tbody = document.getElementById('dailySalesList');
   
-  if (daySales.length === 0) {
+  const allDayRows = [
+    ...daySales.map(s => ({ ...s, _isSettlement: false })),
+    ...daySettlements.map(s => ({ ...s, _isSettlement: true }))
+  ].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  if (allDayRows.length === 0) {
     tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;">لا توجد مبيعات في هذا اليوم</td></tr>';
     return;
   }
   
-  tbody.innerHTML = daySales.map(sale => {
+  tbody.innerHTML = allDayRows.map(sale => {
     const customer = allCustomers.find(c => c.id === sale.customerId);
     const items = allItems.filter(i => i.saleId === sale.id);
+
+    // ✅ تمييز وصولات التسديد عن المبيعات الحقيقية
+    if (sale._isSettlement) {
+      const time = new Date(sale.date).toLocaleTimeString('ar-DZ', { hour: '2-digit', minute: '2-digit' });
+      const label = sale.invoiceKind === 'settlement' ? 'تسديد دين كامل' : 'تسديد دين جزئي';
+      return `
+        <tr style="background:rgba(16,185,129,0.05);">
+          <td>${time}</td>
+          <td style="color:var(--success);">${sale.invoiceNumber || '—'}</td>
+          <td>${customer ? window.sanitizer.escape(customer.name) : '—'}</td>
+          <td style="color:var(--success); font-style:italic;">${window.sanitizer.escape(label)}</td>
+          <td>—</td>
+          <td style="color:var(--success);font-weight:700;">${window.currencyFormatter.formatWithoutSymbol(sale.paid)}</td>
+          <td>—</td>
+          <td><span class="status-badge status-paid">تسديد ✅</span></td>
+          <td>
+            <button class="action-btn" onclick="printSaleInvoice(${sale.id})" title="طباعة">
+              <i class="fa-solid fa-print"></i>
+            </button>
+          </td>
+        </tr>
+      `;
+    }
+
     const productsList = items.map(i => i.productName).join('، ').substring(0, 30) + (items.length > 1 ? '...' : '');
     
-    // ✅ تصنيف صحيح بناءً على paid و isDebt
     let statusClass = 'status-paid';
     let statusText  = 'نقدي ✅';
     if (sale.isDebt && (sale.paid || 0) === 0) {
@@ -2479,15 +2528,25 @@ async function loadProductsReport() {
 async function loadAccounting() {
   const date = document.getElementById('accDate').value;
   
-  const daySales = allSales.filter(s => 
-    !s.isCancelled && s.date.startsWith(date)
+  // ✅ فصل المبيعات الحقيقية عن وصولات التسديد
+  const daySales = allSales.filter(s =>
+    !s.isCancelled &&
+    s.date.startsWith(date) &&
+    s.invoiceKind !== 'settlement' &&
+    s.invoiceKind !== 'partial'
+  );
+  const daySettlements = allSales.filter(s =>
+    !s.isCancelled &&
+    s.date.startsWith(date) &&
+    (s.invoiceKind === 'settlement' || s.invoiceKind === 'partial')
   );
   
-  // إجمالي ما قُبض (paid) — لا total الذي يشمل الديون غير المسددة
-  const revenue = daySales.reduce((sum, s) => sum + (s.paid || 0), 0);
-  const count = daySales.length;
+  // النقدي المقبوض = نقدي من مبيعات + تسديدات ديون
+  const revenue = daySales.reduce((sum, s) => sum + (s.paid || 0), 0)
+                + daySettlements.reduce((sum, s) => sum + (s.paid || 0), 0);
+  const count = daySales.length; // عدد فواتير البيع فقط
   
-  // حساب التكلفة — فقط على المبيعات المقبوضة (paid > 0)
+  // حساب التكلفة — فقط على المبيعات الحقيقية المقبوضة (paid > 0)
   let cost = 0;
   for (const sale of daySales.filter(s => (s.paid || 0) > 0)) {
     const items = allItems.filter(i => i.saleId === sale.id);
