@@ -890,6 +890,7 @@
 <!-- Toast Container -->
 <div id="toast-container"></div>
 
+<script src="print.js"></script>
 <script src="app.js"></script>
 <script src="sync.js"></script>
 <script>
@@ -1075,7 +1076,13 @@ function renderCustomers() {
     const totalDebt = customerDebts.reduce((sum, d) => sum + (d.amount || 0), 0);
     const hasDebt = totalDebt > 0;
     
-    const customerSales = allSales.filter(s => s.customerId === customer.id && !s.isCancelled);
+    // ✅ استبعاد وصولات التسديد من المشتريات — هي دفعات وليست مبيعات جديدة
+    const customerSales = allSales.filter(s =>
+      s.customerId === customer.id &&
+      !s.isCancelled &&
+      s.invoiceKind !== 'settlement' &&
+      s.invoiceKind !== 'partial'
+    );
     const totalPurchases = customerSales.reduce((sum, s) => sum + (s.total || 0), 0);
     const visitCount = customerSales.length;
     
